@@ -1,0 +1,9 @@
+<settings>
+    <category label="Настройки API">
+        <setting id="api_url" type="text" label="API URL" default="http://localhost:3000/api/v1/" />
+    </category>
+    <category label="Настройки пользователя">
+        <setting id="username" type="text" label="Логин" />
+        <setting id="password" type="text" label="Пароль" />
+    </category>
+</settings>
