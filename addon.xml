@@ -9,5 +9,6 @@
         <summary>Anilibria Addon for Kodi</summary>
         <description>An addon to watch anime from Anilibria</description>
         <platform>all</platform>
+        <icon>resources/icon.png</icon>
     </extension>
 </addon>
