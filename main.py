@@ -6,9 +6,37 @@ from urllib.error import URLError
 import xbmcgui
 import xbmcplugin
 import xbmc
+import xbmcaddon
 import socket
 
-BASE_URL = "http://localhost:3000"
+def get_setting(id):
+    return xbmcaddon.Addon().getSetting(id)
+
+def authenticate():
+    api_url = get_setting('api_url')
+    username = get_setting('username')
+    password = get_setting('password')
+
+    auth_url = urljoin(api_url, "accounts/users/auth/login")
+    auth_data = {
+        "login": username,
+        "password": password
+    }
+    try:
+        request = Request(auth_url, data=json.dumps(auth_data).encode(), headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:78.0) Gecko/20100101 Firefox/78.0"})
+        response = urlopen(request)
+        response_data = json.loads(response.read())
+        token = response_data.get('token')
+        if not token:
+            raise ValueError("Authorization token is missing")
+        return token
+    except Exception as e:
+        xbmc.log(f"Authentication error: {e}", level=xbmc.LOGERROR)
+        xbmcgui.Dialog().notification('Authentication Error', str(e), xbmcgui.NOTIFICATION_ERROR)
+        sys.exit()
+
+BASE_URL = get_setting('api_url')
+TOKEN = authenticate()
 
 def build_url(query):
     return sys.argv[0] + '?' + urlencode(query)
@@ -19,7 +47,7 @@ def get_json_response(endpoint, params=None):
         if params:
             url += '?' + urlencode(params)
         xbmc.log(f"Fetching URL: {url}", level=xbmc.LOGINFO)
-        request = Request(url, headers={"User-Agent": "Kodi Addon", "Accept": "application/json"})
+        request = Request(url, headers={"Authorization": f"Bearer {TOKEN}", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:78.0) Gecko/20100101 Firefox/78.0", "Accept": "application/json"})
         response = urlopen(request, timeout=45)
         response_data = response.read()
         xbmc.log(f"Response Data: {response_data[:200]}...", level=xbmc.LOGINFO)
@@ -33,19 +61,11 @@ def get_json_response(endpoint, params=None):
         xbmcgui.Dialog().notification('Error', f'Unexpected error: {e}', xbmcgui.NOTIFICATION_ERROR)
         return None
 
-def list_anime():
-    xbmc.log("Starting list_anime()", level=xbmc.LOGINFO)
-    xbmcplugin.setPluginCategory(handle=int(sys.argv[1]), category='Anime List')
-    xbmcplugin.setContent(int(sys.argv[1]), 'videos')
-
-    # Добавляем элемент поиска
-    search_item = xbmcgui.ListItem(label='Поиск')
-    search_url = build_url({'action': 'search'})
-    xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=search_url, listitem=search_item, isFolder=True)
-
-    anime_list = get_json_response("api/v1/anime/releases/latest")
-    if anime_list:
-        for anime in anime_list:
+def get_favorites():
+    xbmc.log("Starting get_favorites()", level=xbmc.LOGINFO)
+    favorites = get_json_response("accounts/users/me/favorites/releases", {'limit': 50})
+    if favorites and 'data' in favorites:
+        for anime in favorites['data']:
             if 'name' in anime and 'main' in anime['name']:
                 title = anime['name']['main']
                 genres = [genre['name'] for genre in anime.get('genres', [])]
@@ -53,6 +73,7 @@ def list_anime():
                 year = anime.get('year', 'Unknown year')
                 anime_type = anime.get('type', {}).get('description', 'Unknown type')
                 age_rating = anime.get('age_rating', {}).get('description', 'Unknown rating')
+                description = anime.get('description', 'No description available')
                 poster_url = anime.get('poster', {}).get('optimized', {}).get('src', '')
 
                 info = {
@@ -62,6 +83,7 @@ def list_anime():
                     'year': year,
                     'type': anime_type,
                     'age_rating': age_rating,
+                    'plot': description,
                 }
 
                 list_item = xbmcgui.ListItem(label=title)
@@ -72,9 +94,64 @@ def list_anime():
                     'year': info['year'],
                     'type': info['type'],
                     'age_rating': info['age_rating'],
+                    'plot': info['plot'],
                 })
                 if poster_url:
-                    list_item.setArt({'poster': BASE_URL + poster_url})
+                    list_item.setArt({'poster': BASE_URL[:-7] + poster_url})
+                url = build_url({'action': 'details', 'anime_id': anime['id']})
+                xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=url, listitem=list_item, isFolder=True)
+
+    xbmc.log("Ending get_favorites()", level=xbmc.LOGINFO)
+    xbmcplugin.endOfDirectory(int(sys.argv[1]))
+
+def list_anime():
+    xbmc.log("Starting list_anime()", level=xbmc.LOGINFO)
+    xbmcplugin.setPluginCategory(handle=int(sys.argv[1]), category='Anime List')
+    xbmcplugin.setContent(int(sys.argv[1]), 'videos')
+
+    search_item = xbmcgui.ListItem(label='Поиск')
+    search_url = build_url({'action': 'search'})
+    xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=search_url, listitem=search_item, isFolder=True)
+
+    favorites_item = xbmcgui.ListItem(label='Избранное')
+    favorites_url = build_url({'action': 'favorites'})
+    xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=favorites_url, listitem=favorites_item, isFolder=True)
+
+    anime_list = get_json_response("anime/releases/latest")
+    if anime_list:
+        for anime in anime_list:
+            if 'name' in anime and 'main' in anime['name']:
+                title = anime['name']['main']
+                genres = [genre['name'] for genre in anime.get('genres', [])]
+                season = anime.get('season', {}).get('description', 'Unknown season')
+                year = anime.get('year', 'Unknown year')
+                anime_type = anime.get('type', {}).get('description', 'Unknown type')
+                age_rating = anime.get('age_rating', {}).get('description', 'Unknown rating')
+                description = anime.get('description', 'No description available')
+                poster_url = anime.get('poster', {}).get('optimized', {}).get('src', '')
+
+                info = {
+                    'title': title,
+                    'genre': ', '.join(genres),
+                    'season': season,
+                    'year': year,
+                    'type': anime_type,
+                    'age_rating': age_rating,
+                    'plot': description,
+                }
+
+                list_item = xbmcgui.ListItem(label=title)
+                list_item.setInfo('video', {
+                    'title': title,
+                    'genre': info['genre'],
+                    'season': info['season'],
+                    'year': info['year'],
+                    'type': info['type'],
+                    'age_rating': info['age_rating'],
+                    'plot': info['plot'],
+                })
+                if poster_url:
+                    list_item.setArt({'poster': BASE_URL[:-7] + poster_url})
                 url = build_url({'action': 'details', 'anime_id': anime['id']})
                 xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=url, listitem=list_item, isFolder=True)
 
@@ -83,7 +160,7 @@ def list_anime():
 
 def show_anime_details(anime_id):
     xbmc.log(f"Starting show_anime_details({anime_id})", level=xbmc.LOGINFO)
-    anime = get_json_response(f"api/v1/anime/releases/{anime_id}")
+    anime = get_json_response(f"anime/releases/{anime_id}")
     if anime:
         xbmcplugin.setPluginCategory(handle=int(sys.argv[1]), category='Anime Details')
         xbmcplugin.setContent(int(sys.argv[1]), 'videos')
@@ -95,6 +172,7 @@ def show_anime_details(anime_id):
             year = anime.get('year', 'Unknown year')
             anime_type = anime.get('type', {}).get('description', 'Unknown type')
             age_rating = anime.get('age_rating', {}).get('description', 'Unknown rating')
+            description = anime.get('description', 'No description available')
             poster_url = anime.get('poster', {}).get('optimized', {}).get('src', '')
 
             info = {
@@ -104,6 +182,7 @@ def show_anime_details(anime_id):
                 'year': year,
                 'type': anime_type,
                 'age_rating': age_rating,
+                'plot': description,
             }
 
             list_item = xbmcgui.ListItem(label=title)
@@ -114,15 +193,16 @@ def show_anime_details(anime_id):
                 'year': info['year'],
                 'type': info['type'],
                 'age_rating': info['age_rating'],
+                'plot': info['plot'],
             })
             if poster_url:
-                list_item.setArt({'poster': BASE_URL + poster_url})
+                list_item.setArt({'poster': BASE_URL[:-7] + poster_url})
             xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url='', listitem=list_item, isFolder=False)
 
             for episode in anime.get('episodes', []):
                 episode_title = f"{episode['ordinal']} серия - {episode['name']}"
                 episode_item = xbmcgui.ListItem(label=episode_title)
-                episode_item.setInfo('video', {'title': episode_title})
+                episode_item.setInfo('video', {'title': episode_title, 'plot': description})
                 episode_item.setProperty('IsPlayable', 'false')
                 url = build_url({'action': 'choose_quality', 'anime_id': anime_id, 'episode_ordinal': episode['ordinal']})
                 xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=url, listitem=episode_item, isFolder=True)
@@ -132,7 +212,7 @@ def show_anime_details(anime_id):
 
 def choose_quality(anime_id, episode_ordinal):
     xbmc.log(f"Starting choose_quality({anime_id}, {episode_ordinal})", level=xbmc.LOGINFO)
-    anime = get_json_response(f"api/v1/anime/releases/{anime_id}")
+    anime = get_json_response(f"anime/releases/{anime_id}")
     if anime:
         episodes = anime.get('episodes', [])
         for episode in episodes:
@@ -147,7 +227,7 @@ def choose_quality(anime_id, episode_ordinal):
 
                 for quality, url in qualities:
                     quality_item = xbmcgui.ListItem(label=f"{episode['ordinal']} серия - {quality}")
-                    quality_item.setInfo('video', {'title': quality})
+                    quality_item.setInfo('video', {'title': quality, 'plot': description})
                     quality_item.setProperty('IsPlayable', 'true')
                     play_url = build_url({'action': 'play', 'video_url': url})
                     xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=play_url, listitem=quality_item, isFolder=False)
@@ -166,7 +246,7 @@ def search_anime(query):
     xbmcplugin.setPluginCategory(handle=int(sys.argv[1]), category='Search Results')
     xbmcplugin.setContent(int(sys.argv[1]), 'videos')
 
-    search_results = get_json_response("api/v1/app/search/releases", {'query': query})
+    search_results = get_json_response("app/search/releases", {'query': query})
     if search_results:
         for anime in search_results:
             if 'name' in anime and 'main' in anime['name']:
@@ -176,6 +256,7 @@ def search_anime(query):
                 year = anime.get('year', 'Unknown year')
                 anime_type = anime.get('type', {}).get('description', 'Unknown type')
                 age_rating = anime.get('age_rating', {}).get('description', 'Unknown rating')
+                description = anime.get('description', 'No description available')
                 poster_url = anime.get('poster', {}).get('optimized', {}).get('src', '')
 
                 info = {
@@ -185,6 +266,7 @@ def search_anime(query):
                     'year': year,
                     'type': anime_type,
                     'age_rating': age_rating,
+                    'plot': description,
                 }
 
                 list_item = xbmcgui.ListItem(label=title)
@@ -195,9 +277,10 @@ def search_anime(query):
                     'year': info['year'],
                     'type': info['type'],
                     'age_rating': info['age_rating'],
+                    'plot': info['plot'],
                 })
                 if poster_url:
-                    list_item.setArt({'poster': BASE_URL + poster_url})
+                    list_item.setArt({'poster': BASE_URL[:-7] + poster_url})
                 url = build_url({'action': 'details', 'anime_id': anime['id']})
                 xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]), url=url, listitem=list_item, isFolder=True)
 
@@ -226,6 +309,8 @@ def router(paramstring):
             play_anime(params['video_url'])
         elif params['action'] == 'search':
             show_search_dialog()
+        elif params['action'] == 'favorites':
+            get_favorites()
     else:
         list_anime()
 
